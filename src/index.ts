@@ -1,6 +1,9 @@
 import {Hono} from 'hono';
 
-const getSignature = async (secret: string, message: string) => {
+/*
+    LINE
+*/
+const calcWebhookSignature = async (secret: string, message: string) => {
     // Node.jsではないのでWeb CryptoでHMAC-SHA256の計算をする
     const algorithm = {name: 'HMAC', hash: 'SHA-256'};
     const encoder = new TextEncoder();
@@ -27,59 +30,98 @@ const getSignature = async (secret: string, message: string) => {
     return btoa(string);
 };
 
-const handleEvent = async (env: FetchEvent, event: object) => {
-    // メッセージ以外は無視
-    if (event.type !== 'message') {
+const handleEvent = async (env: Env, event: MessageEvent) => {
+    console.log(JSON.stringify(event));
+
+    // メッセージ以外、チャネルがactiveでないときは返信しない
+    if (event.type !== 'message' || event.mode !== 'active') {
         return;
     }
 
-    const message = event.message.text;
-    const reply = {
-        replyToken: event.replyToken,
-        messages: [
-            {
-                type: 'text',
-                text: message
-            }
-        ]
-    };
-    console.log(reply);
-    console.log(env.LINE_CHANNEL_ACCESS_TOKEN);
+    // 送信元ID 取得できなければ返信しない
+    let source = '';
+    switch (event.source.type) {
+        case 'user':
+            source = event.source.userId;
+            break;
+        case 'group':
+            source = event.source.groupId;
+            break;
+        case 'room':
+            source = event.source.roomId;
+            break;
+    }
+    if (source === '') {
+        return;
+    }
 
+    // LINE API
     const url = 'https://api.line.me/v2/bot/message/reply';
     const headers = {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer ' + env.LINE_CHANNEL_ACCESS_TOKEN
     };
+
+    const message = event.message.text;
+    let reply_message = 'OK';
+    switch (message) {
+        case 'みせて':
+        case '見せて':
+            const items = await env.DB.prepare('SELECT * from Items WHERE source = ?')
+                .bind(source)
+                .all();
+            if (items.results.length > 0) {
+                reply_message = items.results.map(item => item.body).join("\r\n");
+            } else {
+                reply_message = '空です';
+            }
+            break;
+        case 'けして':
+        case '消して':
+            await env.DB.prepare('DELETE FROM Items WHERE source = ?')
+                .bind(source)
+                .run();
+            reply_message = '空にしました';
+            break;
+        default:
+            await env.DB.prepare('INSERT INTO Items (message_id, source, body) VALUES (?1, ?2, ?3)')
+                .bind(event.webhookEventId, source, message)
+                .run();
+            reply_message = '追加しました';
+    }
+
+    const reply = {
+        replyToken: event.replyToken,
+        messages: [
+            {
+                type: 'text',
+                text: reply_message
+            }
+        ]
+    };
+
     const response = await fetch(url, {
         method: 'POST',
         headers,
         body: JSON.stringify(reply)
     });
     console.log(JSON.stringify(response));
-}
+};
 
 /*
     handler
 */
-
 export interface Env {
     DB: D1Database
-}
-
-export interface RequestItem {
-    message_id: string,
-    source: string,
-    body: string,
 }
 
 const app = new Hono<{ Bindings: Env }>();
 
 app.post('/events', async (c) => {
     // 署名チェック
-    const line_channel_secret = c.env.LINE_CHANNEL_SECRET;
     const request_body = await c.req.text();
-    const calculated_signature = await getSignature(line_channel_secret, request_body);
+    const line_channel_secret = c.env.LINE_CHANNEL_SECRET;
+    const calculated_signature = await calcWebhookSignature(line_channel_secret, request_body);
     const signature = c.req.header('x-line-signature');
     if (calculated_signature !== signature) {
         c.status(400);
@@ -94,13 +136,3 @@ app.post('/events', async (c) => {
 })
 
 export default app;
-
-/*
-const request_item = await c.req.json<RequestItem>();
-await c.env.DB.prepare('INSERT INTO Items (message_id, source, body) VALUES (?, ?, ?)')
-.bind(request_item.message_id, request_item.source, request_item.body)
-.run();
-c.status(201);
-return c.json(request_item);
-*/
-
