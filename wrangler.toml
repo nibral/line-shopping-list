@@ -1,0 +1,10 @@
+name = "line-shopping-list"
+main = "src/index.ts"
+compatibility_date = "2022-11-08"
+
+[vars]
+
+[[ d1_databases ]]
+binding = "DB"
+database_name = "line-shopping-list"
+database_id = "fc04718b-2101-490b-a4a2-0bce8726cb40"
